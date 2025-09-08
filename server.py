@@ -47,14 +47,19 @@ def allowed_file(filename):
 def run_evaluation(audio_file_path):
     """Run the evaluation script and return results."""
     try:
-        # Ensure paths are properly quoted
+        # Build command with proper paths (no extra quotes needed for subprocess)
         cmd = [
             'python', 'eval.py',
-            '--input_path', f'"{audio_file_path}"',
-            '--model_path', f'"{MODEL_PATH}"'
+            '--input_path', audio_file_path,
+            '--model_path', MODEL_PATH
         ]
         
         logger.info(f"Running command: {' '.join(cmd)}")
+        logger.info(f"Current working directory: {os.getcwd()}")
+        logger.info(f"Audio file path: {audio_file_path}")
+        logger.info(f"Model path: {MODEL_PATH}")
+        logger.info(f"Audio file exists: {os.path.exists(audio_file_path)}")
+        logger.info(f"Model file exists: {os.path.exists(MODEL_PATH)}")
         
         # Run the evaluation
         result = subprocess.run(
