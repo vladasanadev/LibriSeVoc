@@ -9,3 +9,7 @@ matplotlib>=3.6.0
 torch>=2.0.0
 torchaudio>=2.0.0
 tqdm>=4.60.0
+
+# Web server dependencies
+flask>=2.3.0
+werkzeug>=2.3.0
