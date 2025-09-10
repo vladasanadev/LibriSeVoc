@@ -16,6 +16,8 @@ from werkzeug.utils import secure_filename
 import uuid
 import time
 from datetime import datetime
+import requests
+from urllib.parse import urlparse
 
 # Configure logging
 logging.basicConfig(
@@ -43,6 +45,70 @@ def allowed_file(filename):
     """Check if file extension is allowed."""
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def download_audio_from_url(url, request_id):
+    """Download audio file from URL and return local path."""
+    try:
+        logger.info(f"[{request_id}] Downloading audio from URL: {url}")
+        
+        # Parse URL to get filename
+        parsed_url = urlparse(url)
+        url_filename = os.path.basename(parsed_url.path)
+        
+        # If no filename in URL, generate one
+        if not url_filename or '.' not in url_filename:
+            url_filename = f"downloaded_audio_{request_id}.mp3"
+        
+        # Check if file extension is allowed
+        if not allowed_file(url_filename):
+            return None, f"Invalid file type in URL. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"
+        
+        # Create secure filename
+        secure_name = secure_filename(url_filename)
+        timestamp = int(time.time())
+        unique_filename = f"{timestamp}_{request_id}_{secure_name}"
+        local_path = os.path.join(UPLOAD_FOLDER, unique_filename)
+        
+        # Download file with timeout and size limit
+        headers = {
+            'User-Agent': 'LibriSeVoc-API/1.0'
+        }
+        
+        response = requests.get(
+            url, 
+            headers=headers,
+            timeout=30,  # 30 second timeout
+            stream=True
+        )
+        response.raise_for_status()
+        
+        # Check content length if provided
+        content_length = response.headers.get('content-length')
+        if content_length and int(content_length) > 100 * 1024 * 1024:  # 100MB limit
+            return None, "File too large. Maximum size is 100MB."
+        
+        # Download and save file
+        total_size = 0
+        with open(local_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    total_size += len(chunk)
+                    # Check size limit during download
+                    if total_size > 100 * 1024 * 1024:  # 100MB limit
+                        f.close()
+                        os.remove(local_path)
+                        return None, "File too large. Maximum size is 100MB."
+                    f.write(chunk)
+        
+        logger.info(f"[{request_id}] Downloaded {total_size} bytes to {local_path}")
+        return local_path, None
+        
+    except requests.exceptions.Timeout:
+        return None, "Download timeout. URL took too long to respond."
+    except requests.exceptions.RequestException as e:
+        return None, f"Failed to download from URL: {str(e)}"
+    except Exception as e:
+        return None, f"Error downloading file: {str(e)}"
 
 def run_evaluation(audio_file_path):
     """Run the evaluation script and return results."""
@@ -107,6 +173,7 @@ def evaluate_audio():
     Expected request formats:
     1. File upload: multipart/form-data with 'audio' file field
     2. JSON with filename: {"filename": "path/to/audio.wav"}
+    3. JSON with URL: {"url": "https://example.com/audio.mp3"}
     """
     try:
         request_id = str(uuid.uuid4())[:8]
@@ -145,27 +212,47 @@ def evaluate_audio():
                     'request_id': request_id
                 }), 400
         
-        # Handle JSON request with filename
+        # Handle JSON request with filename or URL
         elif request.is_json:
             data = request.get_json()
-            if 'filename' not in data:
+            
+            # Handle URL download
+            if 'url' in data:
+                url = data['url']
+                logger.info(f"[{request_id}] Processing URL request: {url}")
+                
+                # Download file from URL
+                downloaded_path, error = download_audio_from_url(url, request_id)
+                if error:
+                    return jsonify({
+                        'error': error,
+                        'request_id': request_id
+                    }), 400
+                
+                audio_file_path = downloaded_path
+                cleanup_file = True
+                logger.info(f"[{request_id}] Downloaded file from URL: {audio_file_path}")
+            
+            # Handle local filename
+            elif 'filename' in data:
+                audio_file_path = data['filename']
+                if not os.path.exists(audio_file_path):
+                    return jsonify({
+                        'error': f'File not found: {audio_file_path}',
+                        'request_id': request_id
+                    }), 400
+                
+                logger.info(f"[{request_id}] Using existing file: {audio_file_path}")
+            
+            else:
                 return jsonify({
-                    'error': 'Missing filename in request',
+                    'error': 'Missing filename or url in request',
                     'request_id': request_id
                 }), 400
-            
-            audio_file_path = data['filename']
-            if not os.path.exists(audio_file_path):
-                return jsonify({
-                    'error': f'File not found: {audio_file_path}',
-                    'request_id': request_id
-                }), 400
-            
-            logger.info(f"[{request_id}] Using existing file: {audio_file_path}")
         
         else:
             return jsonify({
-                'error': 'No audio file provided. Use file upload or JSON with filename.',
+                'error': 'No audio file provided. Use file upload, JSON with filename, or JSON with URL.',
                 'request_id': request_id
             }), 400
         
@@ -248,7 +335,7 @@ def not_found(e):
         'error': 'Endpoint not found',
         'available_endpoints': [
             'GET / - Health check',
-            'POST /evaluate - Evaluate audio file',
+            'POST /evaluate - Evaluate audio file (upload, filename, or URL)',
             'GET /status - Server status'
         ]
     }), 404
